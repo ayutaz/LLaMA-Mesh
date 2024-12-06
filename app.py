@@ -119,48 +119,64 @@ def visualize_mesh(mesh_text):
 
 # @spaces.GPU(duration=120)
 def chat_llama3_8b(message: str, 
-              history: list, 
-              temperature: float, 
-              max_new_tokens: int
-             ) -> str:
+                   history: list, 
+                   temperature: float, 
+                   max_new_tokens: int
+                  ) -> str:
     """
     Generate a streaming response using the llama3-8b model.
-    Args:
-        message (str): The input message.
-        history (list): The conversation history used by ChatInterface.
-        temperature (float): The temperature for generating the response.
-        max_new_tokens (int): The maximum number of new tokens to generate.
-    Returns:
-        str: The generated response.
     """
     conversation = []
     for user, assistant in history:
         conversation.extend([{"role": "user", "content": user}, {"role": "assistant", "content": assistant}])
     conversation.append({"role": "user", "content": message})
-
-    input_ids = tokenizer.apply_chat_template(conversation, return_tensors="pt").to(model.device)
+    
+    # トークナイズして inputs として取得
+    inputs = tokenizer.apply_chat_template(conversation, return_tensors="pt")
+    
+    # 各テンソルをデバイスに移動
+    for key in inputs:
+        inputs[key] = inputs[key].to(model.device)
+    
+    # inputs['input_ids'] の形状を確認
+    # print(f"input_ids shape: {inputs['input_ids'].shape}")
+    # 1 次元または 2 次元のテンソルか確認
+    if inputs['input_ids'].dim() == 1:
+        input_length = inputs['input_ids'].shape[0]
+    else:
+        input_length = inputs['input_ids'].shape[1]
+    
+    # max_length を計算
+    max_length = input_length + max_new_tokens
+    
+    # pad_token_id を設定
+    model.config.pad_token_id = tokenizer.eos_token_id
     
     streamer = TextIteratorStreamer(tokenizer, timeout=10.0, skip_prompt=True, skip_special_tokens=True)
-
+    
+    # generate の引数を設定
     generate_kwargs = dict(
-        input_ids= input_ids,
+        **inputs,  # input_ids と attention_mask を含める
         streamer=streamer,
         max_new_tokens=max_new_tokens,
+        max_length=max_length,
         do_sample=True,
         temperature=temperature,
         eos_token_id=terminators,
     )
-    # This will enforce greedy generation (do_sample=False) when the temperature is passed 0, avoiding the crash.             
+
+    # 温度が0の場合の処理
     if temperature == 0:
         generate_kwargs['do_sample'] = False
         
+    # モデルの生成を別スレッドで開始
     t = Thread(target=model.generate, kwargs=generate_kwargs)
     t.start()
 
+    # 出力を収集
     outputs = []
     for text in streamer:
         outputs.append(text)
-        #print(outputs)
         yield "".join(outputs)
         
 
@@ -235,5 +251,5 @@ with gr.Blocks(fill_height=True, css=css) as demo:
                 )
           
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(share=True)
     
